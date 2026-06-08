@@ -32,3 +32,16 @@ RUN FRONTEND
 1. cd Frontend
 2. Npm install
 3. NPM Run Dev
+
+## Render deployment (FastAPI backend)
+
+Use a Python web service for this backend.
+
+- Root directory: `Backend`
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+
+If your service was created as a Node service, either:
+
+1. switch the service to use the commands above, or
+2. recreate it as a Python web service pointing to `Backend`.
