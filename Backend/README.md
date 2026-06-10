@@ -25,7 +25,10 @@ Reference requests are saved to a local JSON file instead of MongoDB.
 RUN BACKEND - 
 1. cd Backend
 2. .\venv\Scripts\Activate.ps1
-3. uvicorn main:app --reload --host 127.0.0.1 --port 8000
+3. pip install -r requirements.txt
+4. uvicorn main:app --reload --host 127.0.0.1 --port 8000
+
+Use Python 3.11.9 for this backend virtual environment.
 
 RUN FRONTEND
 
@@ -36,6 +39,8 @@ RUN FRONTEND
 ## Render deployment (FastAPI backend)
 
 Use a Python web service for this backend.
+
+- Python version: `3.11.9` (pinned in `runtime.txt`)
 
 - Root directory: `Backend`
 - Build command: `pip install -r requirements.txt`

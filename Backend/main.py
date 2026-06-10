@@ -1,3 +1,4 @@
+import asyncio
 import random
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -5,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 app = FastAPI()
+DRAW_INTERVAL_SECONDS = 10
 
 # Allow frontend calls (important!)
 app.add_middleware(
@@ -43,10 +45,12 @@ class DrawState:
         self.players: list[Player] = []
         self.assignments: dict[str, str] = {}
         self.current_draw_pair: dict[str, str] = {"player": "", "team": ""}
+        self.is_drawing: bool = False
 
 
 draw_state = DrawState()
 active_connections: list[WebSocket] = []
+draw_task: asyncio.Task | None = None
 
 
 def serialize_state() -> dict:
@@ -54,6 +58,7 @@ def serialize_state() -> dict:
         "players": [player.model_dump() for player in draw_state.players],
         "assignments": draw_state.assignments,
         "currentDrawPair": draw_state.current_draw_pair,
+        "isDrawing": draw_state.is_drawing,
     }
 
 
@@ -73,6 +78,44 @@ async def broadcast_state():
     for connection in stale_connections:
         if connection in active_connections:
             active_connections.remove(connection)
+
+
+def remaining_draw_items(teams: list[str]) -> tuple[list[str], list[Player]]:
+    assigned_teams = set(draw_state.assignments.keys())
+    assigned_players = set(draw_state.assignments.values())
+
+    remaining_teams = [team for team in teams if team not in assigned_teams]
+    remaining_players = [player for player in draw_state.players if player.name not in assigned_players]
+    return remaining_teams, remaining_players
+
+
+async def run_draw_sequence(teams: list[str]):
+    try:
+        while draw_state.is_drawing:
+            remaining_teams, remaining_players = remaining_draw_items(teams)
+
+            if len(draw_state.players) > len(teams):
+                break
+
+            if not remaining_teams or not remaining_players:
+                break
+
+            team = random.choice(remaining_teams)
+            player = random.choice(remaining_players)
+
+            draw_state.assignments[team] = player.name
+            draw_state.current_draw_pair = {"player": player.name, "team": team}
+            await broadcast_state()
+
+            if len(draw_state.assignments) >= len(teams):
+                break
+
+            await asyncio.sleep(DRAW_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    finally:
+        draw_state.is_drawing = False
+        await broadcast_state()
 
 
 # --- Basic test route ---
@@ -130,15 +173,14 @@ async def update_assignment(data: AssignmentRequest):
 
 @app.post("/draw")
 async def draw_next_pair(data: DrawRequest):
+    if draw_state.is_drawing:
+        raise HTTPException(status_code=409, detail="Draw is currently running")
+
     teams = [team.strip() for team in data.teams if team.strip()]
     if not teams:
         raise HTTPException(status_code=400, detail="Teams list cannot be empty")
 
-    assigned_teams = set(draw_state.assignments.keys())
-    assigned_players = set(draw_state.assignments.values())
-
-    remaining_teams = [team for team in teams if team not in assigned_teams]
-    remaining_players = [player for player in draw_state.players if player.name not in assigned_players]
+    remaining_teams, remaining_players = remaining_draw_items(teams)
 
     if len(draw_state.players) > len(teams):
         raise HTTPException(status_code=400, detail="Not enough teams for all players")
@@ -156,8 +198,39 @@ async def draw_next_pair(data: DrawRequest):
     return serialize_state()
 
 
+@app.post("/draw/start")
+async def start_draw_sequence(data: DrawRequest):
+    global draw_task
+
+    if draw_state.is_drawing:
+        raise HTTPException(status_code=409, detail="Draw is already running")
+
+    teams = [team.strip() for team in data.teams if team.strip()]
+    if not teams:
+        raise HTTPException(status_code=400, detail="Teams list cannot be empty")
+
+    if len(draw_state.players) > len(teams):
+        raise HTTPException(status_code=400, detail="Not enough teams for all players")
+
+    remaining_teams, remaining_players = remaining_draw_items(teams)
+    if not remaining_teams or not remaining_players:
+        raise HTTPException(status_code=400, detail="No remaining teams or players for draw")
+
+    draw_state.is_drawing = True
+    await broadcast_state()
+
+    draw_task = asyncio.create_task(run_draw_sequence(teams))
+    return serialize_state()
+
+
 @app.post("/reset")
 async def reset_draw():
+    global draw_task
+
+    draw_state.is_drawing = False
+    if draw_task and not draw_task.done():
+        draw_task.cancel()
+
     draw_state.players = []
     draw_state.assignments = {}
     draw_state.current_draw_pair = {"player": "", "team": ""}
